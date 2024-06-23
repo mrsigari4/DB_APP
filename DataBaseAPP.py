@@ -834,7 +834,7 @@ class CombinedApp(customtkinter.CTk):
             df = pd.DataFrame(data['rows'], columns=data['headers'])
             html = f"<h2>{table_name}</h2>" + df.to_html()
 
-            config = pdfkit.configuration(wkhtmltopdf=r'F:\архив\codes\print.nasvai()\BD\wkhtmltopdf\bin\wkhtmltopdf.exe')
+            config = pdfkit.configuration(wkhtmltopdf=r'wkhtmltopdf\bin\wkhtmltopdf.exe')
 
             pdfkit.from_string(html, file_path, configuration=config, options={'encoding': 'utf-8'})
 
