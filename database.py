@@ -8,7 +8,7 @@ def query_to_db(CONN, QUERY) -> str:
         CONN.commit()
 
         results = cursor.fetchall() if cursor.description else None
-
+        print(results)
         if results is None:
             cursor.close()
             return 'NO RESULTS'
@@ -17,6 +17,7 @@ def query_to_db(CONN, QUERY) -> str:
             results_keys = results[0].keys()
             keys = list(results_keys)
             return {'results': results, 'keys': keys}
+            
         else:
             return 'NO RESULTS'
     except Exception as e:
@@ -29,7 +30,7 @@ def query_to_db(CONN, QUERY) -> str:
 
 def connect_to_db(SERVER, DATABASE, USER, PASSWORD) -> object:
     try:
-        print(SERVER)
+        print("Server name = " + SERVER)
         conn = pymssql.connect(
             server=SERVER,
             user=USER,

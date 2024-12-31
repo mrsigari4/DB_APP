@@ -1,23 +1,63 @@
-from tkinter import ttk
-from tkcalendar import DateEntry
-import customtkinter
 import os
-from PIL import Image
-from database import connect_to_db, query_to_db
-import pandas as pd
+import sys
+import random
 import pdfkit
-from tkinter import filedialog
+import logging
+import pandas as pd
+import customtkinter
+from PIL import Image
+from tkinter import ttk
+from VF import send_email
 from datetime import datetime
+from tkinter import filedialog
+from tkcalendar import DateEntry
+from database import connect_to_db
+from KeyringAuthentication import LoginSetter, LoginGetter
+
 
 conn = None
 DATABASE_name = ''
 SERVER_name = ''
+
+log_directory = 'BD/Log'
+
+if not os.path.exists(log_directory):
+    os.makedirs(log_directory)
+
+logging.basicConfig(filename='BD/Log/app.log', 
+                    level=logging.INFO, 
+                    format='%(asctime)s - %(levelname)s - %(message)s')
+7
+def Two_FA(username):
+    global conn
+    cursor = conn.cursor()
+    cursor.execute(f"SELECT Email FROM Email_authorization WHERE Login = '{username}';")
+    test = cursor.fetchall()
+    emails = [row['Email'] for row in test if row['Email'].strip()]
+
+    if not emails:
+        logging.warning(f"No email found for user: {username}")
+    else:
+        for email in emails:
+            logging.info(f"Email found for {username}")
+
+    def generate_random_numbers():
+        return ''.join([str(random.randint(0, 9)) for _ in range(6)])
+    
+    CODE = generate_random_numbers()
+    logging.info(f"Generated 2FA code for {username}")
+    
+    send_email(email, CODE)
+    logging.info(f"Sent 2FA code to {email}")
+
+    return CODE
 
 def get_view_names_from_db():
     global conn
     cursor = conn.cursor()
     cursor.execute("SELECT table_name FROM INFORMATION_SCHEMA.TABLES WHERE table_type = 'VIEW';")
     view_names = [row['table_name'] for row in cursor.fetchall()]
+    logging.info("Fetched view names from the database")
     return view_names
 
 def get_table_names_from_db():
@@ -25,6 +65,7 @@ def get_table_names_from_db():
     cursor = conn.cursor()
     cursor.execute("SELECT table_name FROM INFORMATION_SCHEMA.TABLES WHERE table_type = 'BASE TABLE';")
     table_names = [row['table_name'] for row in cursor.fetchall()]
+    logging.info("Fetched table names from the database")
     return table_names
 
 def get_stored_procedures_functions():
@@ -32,21 +73,20 @@ def get_stored_procedures_functions():
     cursor = conn.cursor()
     cursor.execute("SELECT specific_name FROM information_schema.routines WHERE routine_type IN ('PROCEDURE', 'FUNCTION')")
     stored_procs_funcs = [row['specific_name'] for row in cursor.fetchall()]
+    logging.info("Fetched stored procedures and functions from the database")
     return stored_procs_funcs
 
 class CombinedApp(customtkinter.CTk):
     width = 1080
     height = 780
-
+    
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.results_dict = None
-
+    
         self.title("DB App")
         self.geometry(f"{self.width}x{self.height}")
         self.resizable(False, False)
-
-        self.protocol("WM_DELETE_WINDOW", self.on_closing)
 
         # load and create background image
         current_path = os.path.dirname(os.path.realpath(__file__))
@@ -69,22 +109,56 @@ class CombinedApp(customtkinter.CTk):
         self.login_button.grid(row=5, column=0, padx=30, pady=(15, 15))
         self.login_inf_label = customtkinter.CTkLabel(self.login_frame, text="")
         self.login_inf_label.grid(row=6, column=0, padx=30, pady=(15, 15))
+        self.username_entryKA = customtkinter.CTkEntry(self.login_frame, width=200, placeholder_text="Saved username")
+        self.username_entryKA.grid(row=7, column=0, padx=30, pady=(15, 15))
+        self.login_buttonKA = customtkinter.CTkButton(self.login_frame, text="Login", command=self.login_eventKA, width=200)
+        self.login_buttonKA.grid(row=8, column=0, padx=30, pady=(15, 15))
+        self.login_inf_labelKA = customtkinter.CTkLabel(self.login_frame, text="")
+        self.login_inf_labelKA.grid(row=9, column=0, padx=30, pady=(15, 15))
         
     def login_event(self):
         username = self.username_entry.get()
         password = self.password_entry.get()
 
         global conn, DATABASE_name, SERVER_name
-        DATABASE_name = 'test'
-        SERVER_name = 'SIGARA\SQLEXPRESS'
+        DATABASE_name = ''
+        SERVER_name = ''
         conn = connect_to_db(SERVER_name, DATABASE_name, username, password)
 
         if not conn:
             self.login_inf_label.configure(text="Connection error\n Check input login or password", text_color="red")
+            logging.error(f"Connection error for user: {username}")
         else:
-            print("Login successful")
-            self.login_frame.grid_forget()  # скрыть окно авторизации
-            self.withdraw()  # скрыть текущее окно вместо уничтожения
+            self.login_frame.grid_forget()
+            self.withdraw() 
+            CODE = Two_FA(username)
+            dialog = customtkinter.CTkInputDialog(text="Input your code from Email", title="VF")
+            input_code = dialog.get_input()
+            if input_code == CODE:
+                logging.info(f"User {username} logged in successfully.")
+                LoginSetter(username, password)
+                self.create_main_app()
+            else:
+                logging.error(f"Failed 2FA for user: {username}")
+                conn.close()
+                sys.exit(0)
+
+    def login_eventKA(self):
+        username = self.username_entryKA.get()
+        password = LoginGetter(username)
+
+        global conn, DATABASE_name, SERVER_name
+        DATABASE_name = ''
+        SERVER_name = ''
+        conn = connect_to_db(SERVER_name, DATABASE_name, username, password)
+
+        if not conn:
+            self.login_inf_labelKA.configure(text="Connection error\n Login not found", text_color="red")
+            logging.error(f"Saved login not found for user: {username}")
+        else:
+            self.login_frame.grid_forget()
+            self.withdraw()
+            logging.info(f"User {username} logged in successfully using saved credentials.")
             self.create_main_app()
 
     def create_main_app(self, *args, **kwargs):
@@ -308,10 +382,12 @@ class CombinedApp(customtkinter.CTk):
                 self.query_label_admin_info.configure(text='query successfully', fg_color='green')
                 conn.commit()
                 cursor.close()
+                logging.info("Query executed successfully")
             except Exception as e:
                 self.query_label_admin_info.configure(text='query errore', fg_color='red')
                 conn.rollback()
                 cursor.close()
+                logging.error("Error executing query")
 
     def open_db_audit(self):
         global conn
@@ -331,8 +407,9 @@ class CombinedApp(customtkinter.CTk):
                             cell_label = customtkinter.CTkLabel(self.audit_db_label, text=str(cell_value), font=("Arial", 10, "bold"))
                             cell_label.grid(row=row_idx + 1, column=col_idx, padx=10, pady=5)
                 cursor.close()
+                logging.info("DB audit data fetched successfully.")
             except Exception as e:
-                print("Произошла ошибка при выполнении запроса:", e)
+                logging.error("Error fetching DB audit data: %s", str(e))
 
     def open_server_audit(self):
         global conn
@@ -352,19 +429,23 @@ class CombinedApp(customtkinter.CTk):
                             cell_label = customtkinter.CTkLabel(self.audit_server_label, text=str(cell_value), font=("Arial", 10, "bold"))
                             cell_label.grid(row=row_idx + 1, column=col_idx, padx=10, pady=5)
                 cursor.close()
+                logging.info("Server audit data fetched successfully.")
             except Exception as e:
-                print("Произошла ошибка при выполнении запроса:", e)
+                logging.error("Error fetching server audit data: %s", str(e))
 
     def clear_db_audit_display(self):
+        logging.info('Clearing audit DB display')
         for widget in self.audit_db_label.winfo_children():
             widget.destroy()
 
     def clear_server_audit_display(self):
+        logging.info('Clearing server audit display')
         for widget in self.audit_server_label.winfo_children():
             widget.destroy()
 
     def update_insert_widgets(self, event):
         selected_table = self.Tables_optionemenu.get()
+        logging.info(f'Updating insert widgets')
 
         for widget in self.insert_widgets:
             widget.destroy()
@@ -384,6 +465,7 @@ class CombinedApp(customtkinter.CTk):
             self.insert_widgets.append(insert_button)
 
     def update_option_menu(self, selected_table):
+        logging.info(f'Updating option menu')
         columns = self.get_columns_for_table(selected_table)
 
         if columns:
@@ -418,9 +500,10 @@ class CombinedApp(customtkinter.CTk):
             if hasattr(self, 'Update_column_optionmenu') and isinstance(self.Update_column_optionmenu, customtkinter.CTkOptionMenu):
                 self.Update_column_optionmenu.destroy()
 
-    def insert_button_event(self):
+    def insert_button_event(self): #####
         cursor = conn.cursor()
         selected_table = self.Tables_optionemenu.get()
+        logging.info(f'Insert operation started')
 
         if selected_table:
             non_identity_columns = [column for column in self.get_columns_for_table(selected_table)
@@ -434,6 +517,7 @@ class CombinedApp(customtkinter.CTk):
                     columns_str = ", ".join(non_identity_columns)
                     values_str = ", ".join(["%s" for _ in non_identity_columns])
                     insert_query = f"INSERT INTO {selected_table} ({columns_str}) VALUES ({values_str});"
+                    logging.info(f'Executing query')
 
                     cursor.execute(insert_query, tuple(values))
                     conn.commit()
@@ -441,10 +525,12 @@ class CombinedApp(customtkinter.CTk):
                     self.table_show_button_event()
                     cursor.close()
                 else:
+                    logging.warning('Insertion failed: no values provided')
                     self.Insert_status_lable.configure(text='Fill in at least one field for insertion', fg_color='red')
                     conn.rollback()
                     cursor.close()
             except Exception as e:
+                logging.error(f'Insert operation failed: {e}')
                 self.Insert_status_lable.configure(text='check the accuracy of the entered data', fg_color='red')
                 print("Ошибка выполнения запроса:", e)
                 conn.rollback()
@@ -455,6 +541,7 @@ class CombinedApp(customtkinter.CTk):
         selected_table = self.Tables_optionemenu.get()
         selected_column = self.delete_option_menu.get()
         value_to_delete = self.delete_entry.get()
+        logging.info(f'Delete operation started')
 
         if selected_table and selected_column and value_to_delete:
 
@@ -464,15 +551,19 @@ class CombinedApp(customtkinter.CTk):
                 affected_rows = cursor.rowcount  # Получение количества затронутых строк
                 conn.commit()
                 if affected_rows == 0:
+                    logging.warning(f'No rows deleted')
                     self.Delete_status_lable.configure(text='No rows were deleted, check the accuracy of the entered data', fg_color='red')
                 else:
+                    logging.info(f'Deletion successful')
                     self.Delete_status_lable.configure(text='Deletion successful', fg_color='green')
                     self.table_show_button_event()
             except Exception as e:
+                logging.error(f'Delete operation failed: {e}')
                 self.Delete_status_lable.configure(text='check the accuracy of the entered data', fg_color='red')
                 print("Ошибка выполнения запроса:", e)
                 conn.rollback()
         else:
+            logging.warning('Delete operation failed: not all fields filled')
             self.Delete_status_lable.configure(text='Fill fields', fg_color='red')
 
     def update_button_event(self):
@@ -482,6 +573,8 @@ class CombinedApp(customtkinter.CTk):
         new_value = self.Update_value_entry.get()
         selected_column_condition = self.Update_column_optionmenu_condition.get()
         condition = self.condition.get()
+        logging.info(f'Update operation started')
+
         if selected_table and selected_column and new_value:
             update_query = f"UPDATE {selected_table} SET {selected_column} = %s WHERE {selected_column_condition} = %s;"
             try:
@@ -489,18 +582,22 @@ class CombinedApp(customtkinter.CTk):
                 affected_rows = cursor.rowcount
                 conn.commit()
                 if affected_rows == 0:
+                    logging.warning(f'No rows updated')
                     self.Update_status_lable.configure(text='No rows were updated, check the accuracy of the entered data', fg_color='red')
                 else:
+                    logging.info(f'Update successful')
                     self.Update_status_lable.configure(text='Update successful', fg_color='green')
                     self.table_show_button_event()
             except Exception as e:
+                logging.error(f'Update operation failed: {e}')
                 self.Update_status_lable.configure(text='check the accuracy of the entered data', fg_color='red')
                 print("Ошибка выполнения запроса:", e)
                 conn.rollback()
         else:
+            logging.warning('Update operation failed: not all fields filled')
             self.Update_status_lable.configure(text='Fill fields', fg_color='red')
 
-    def column_has_constraints(self, table_name, column_name, constraints):
+    def column_has_constraints(self, table_name, column_name, constraints): ###
         global conn
         cursor = conn.cursor()
         cursor.execute(f"SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '{table_name}' AND COLUMN_NAME = '{column_name}' AND COLUMNPROPERTY(OBJECT_ID(TABLE_NAME), COLUMN_NAME, 'IsIdentity') = 1;")
@@ -516,9 +613,11 @@ class CombinedApp(customtkinter.CTk):
         return columns
     
     def query(self):
+        logging.info("Starting query execution")
         global conn
         cursor = conn.cursor()
         if not conn:
+            logging.error("Connection error.")
             self.query_status_label.configure(text='CONNECTION ERROR. TRY RECONNECT', fg_color='red')
         else:
             selected_option = self.Query_optionemenu.get()
@@ -583,12 +682,13 @@ class CombinedApp(customtkinter.CTk):
 
                     self.query_status_label.configure(text='successful', fg_color='green')
 
-                except:
+                except Exception as e:
+                    logging.error(f"Query execution failed: {e}")
                     self.query_status_label.configure(text='check the accuracy of the entered data', fg_color='red')
                     conn.rollback()
                     cursor.close()
 
-    def update_query_parameters(self, selected_option):
+    def update_query_parameters(self, selected_option): ###
         parameter_label = None
         parameter_label_date = None
 
@@ -599,9 +699,11 @@ class CombinedApp(customtkinter.CTk):
                 widget.destroy()
         
         if selected_option == "GetServicesForOrder":
+            logging.info('Creating parameter input for order number')
             parameter_label = customtkinter.CTkEntry(self.Query_frame, placeholder_text="order number")
             parameter_label.grid(row=2, column=0, padx=20, pady=10, sticky="n")
         elif selected_option == "SelectOrdersByReceiverAndDate":
+            logging.info('Creating parameter input for receiver code and order date')
             inf_label_date = customtkinter.CTkLabel(self.Query_frame, text="Order date:")
             inf_label_date.grid(row=3, column=0 ,padx=20, pady=10, sticky="n")
             parameter_label = customtkinter.CTkEntry(self.Query_frame, placeholder_text="Receiver code")
@@ -712,6 +814,7 @@ class CombinedApp(customtkinter.CTk):
         global conn
         if not conn:
             self.info_label.configure(text='CONNECTION ERROR. TRY RECONNECT', fg_color='red')
+            logging.error(f"Connection error when trying to access table: {name}")
         else:
             try:
                 cursor = conn.cursor()
@@ -720,6 +823,7 @@ class CombinedApp(customtkinter.CTk):
 
                 if not result:
                     self.info_label.configure(text=f"No data found in view {name}")
+                    logging.info(f"No data found in table")
                 else:
                     headers = [column[0] for column in cursor.description]
 
@@ -735,15 +839,17 @@ class CombinedApp(customtkinter.CTk):
                             cell_value = row[header]
                             cell_label = customtkinter.CTkLabel(self.table_frame, text=str(cell_value))
                             cell_label.grid(row=row_idx + 1, column=col_idx, padx=10, pady=5)
-
+                    
+                    logging.info(f"Successfully displayed table {name}")
 
             except Exception as e:
-                print(f"Error: {str(e)}")
+                logging.error(f"Error while displaying table {name}: {str(e)}")
 
     def show_selected_view(self, name):
         global conn
         if not conn:
             self.info_label.configure(text='CONNECTION ERROR. TRY RECONNECT', fg_color='red')
+            logging.error(f"Connection error when trying to access view")
         else:
             try:
                 cursor = conn.cursor()
@@ -752,6 +858,7 @@ class CombinedApp(customtkinter.CTk):
 
                 if not result:
                     self.info_label.configure(text=f"No data found in view {name}")
+                    logging.info(f"No data found in view")
                 else:
                 
                     headers = [desc[0] for desc in cursor.description]
@@ -772,9 +879,10 @@ class CombinedApp(customtkinter.CTk):
                     self.scrollbar = customtkinter.CTkScrollbar(self.View_frame, orientation='horizontal')
                     self.scrollbar.grid(side = 'botom')
                     self.view_frame.config(self.scrollbar.set)
+                    logging.info(f"Successfully displayed view {name}")
 
             except Exception as e:
-                print(f"Error: {str(e)}")
+                logging.error(f"Error while displaying view {name}: {str(e)}")
 
                 
     def export_view(self):
@@ -834,13 +942,13 @@ class CombinedApp(customtkinter.CTk):
             df = pd.DataFrame(data['rows'], columns=data['headers'])
             html = f"<h2>{table_name}</h2>" + df.to_html()
 
-            config = pdfkit.configuration(wkhtmltopdf=r'wkhtmltopdf\bin\wkhtmltopdf.exe')
+            config = pdfkit.configuration(wkhtmltopdf=r'\wkhtmltopdf\bin\wkhtmltopdf.exe')
 
             pdfkit.from_string(html, file_path, configuration=config, options={'encoding': 'utf-8'})
 
-            print("PDF file successfully created.")
+            logging.info(f"PDF file {file_path} successfully created.")
         except Exception as e:
-            print("An error occurred while exporting to PDF:", str(e))
+            logging.error(f"Error while exporting to PDF: {str(e)}")
 
     def export_to_excel(self, data, file_path, table_name):
         try:
@@ -849,16 +957,11 @@ class CombinedApp(customtkinter.CTk):
             df.to_excel(writer, index=False, sheet_name=table_name)
             writer.close()
 
-            print("Excel file successfully created.")
+            logging.info(f"Excel file {file_path} successfully created.")
         except Exception as e:
-            print("An error occurred while exporting to Excel:", str(e))
+            logging.error(f"Error while exporting to Excel: {str(e)}")
 
-    def on_closing(self):
-        # Perform cleanup tasks if necessary
-        if conn:
-            conn.close()
-        self.quit()
-        self.destroy()
+    
 
 if __name__ == "__main__":
     combined_app = CombinedApp()
